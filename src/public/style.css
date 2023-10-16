@@ -1,0 +1,19 @@
+.holder {
+  display: block;
+}
+.container {
+  column-count: 3;
+}
+img {
+  min-width: 20px;
+}
+@media screen and (max-width: 1200px) {
+  .container {
+    column-count: 2;
+  }
+}
+@media screen and (max-width: 600px) {
+  .container {
+    column-count: 1;
+  }
+}

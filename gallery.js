@@ -1,5 +1,6 @@
 const { normalize, parse, join } = require("path")
-const { log, getFiles, readText } = require("./util.js")
+const { log, getFiles, readText, copyAsJpeg, PageData } = require("./util.js")
+const { posix } = require("node:path")
 const sharp = require("sharp")
 const yml = require("yaml")
 function imagesFilter(item) {
@@ -7,6 +8,8 @@ function imagesFilter(item) {
     ? true
     : false
 }
+
+
 
 async function makeThumb(file, destination, width = 400) {
   log(`thumb ${destination}`, 2)
@@ -16,8 +19,6 @@ async function makeThumb(file, destination, width = 400) {
     .toBuffer()
     .then(buffer => sharp(buffer))
   const meta = await img.metadata()
-  
-  log(meta, 3)
   let svg = `<svg><rect x="0" y="0" width="${meta.width}" height="${meta.height}" rx="5" ry="5"/></svg>`
   const mask = Buffer.from(svg)
   return await img
@@ -35,9 +36,9 @@ async function* parseImages(files, imgSrcDir, imgDestPath, thumbDir) {
   for (const x of filtered) {
     const srcFile = join(imgSrcDir, x.name)
     const info = parse(srcFile)
-    log(info, 2)
     yield {
       srcFile,
+      name: info.name,
       distImgFile: normalize(join(imgDestPath, `${info.name}.jpg`)),
       distThumbFile: normalize(join(thumbDir, `${info.name}.thumb.png`)),
       metaFile: normalize(join(imgSrcDir, `${info.name}.yml`))
@@ -45,47 +46,44 @@ async function* parseImages(files, imgSrcDir, imgDestPath, thumbDir) {
   }
 }
 
-async function processImages(IMGSRCPATH, IMGDESTPATH, THUMBPATH) {
+async function processImageData(
+  IMGSRCPATH,
+  IMGDESTPATH,
+  THUMBPATH,
+  DISTPATH,
+  pageData
+) {
   log(`processing images`, 1)
   const imgfiles = await getFiles(IMGSRCPATH)
   const promises = []
-  const pageData = []
-  const threads = 5
-  let running = 0
+
   for await (const i of parseImages(
     imgfiles,
     IMGSRCPATH,
     IMGDESTPATH,
     THUMBPATH
   )) {
-    running += 1
     log(`processing ${i.srcFile}`, 2)
-    const { distImgFile, distThumbFile, srcFile } = i
+    const { distImgFile, distThumbFile, srcFile, metaFile } = i
+    const thumbUrl = posix.relative(DISTPATH, distThumbFile)
+    const fullUrl = posix.relative(DISTPATH, distImgFile)
     const data = {
+      srcFile,
       distImgFile,
-      distThumbFile
+      distThumbFile,
+      thumbUrl,
+      fullUrl
     }
+    const ymlData = await readText(metaFile)
+    // add attributes from yaml file
+    Object.assign(data, yml.parse(ymlData))
     log(`data: ${JSON.stringify(data)}`, 3)
-    // get path to matching.yml file
-    const ymlFile = join(IMGSRCPATH, `${i.name}.yml`)
-    const ymlData = await readText(ymlFile)
-    const ymlJson = JSON.parse(ymlData)
-    Object.assign(data, ymlJson)
-    if (running >= threads) {
-      const fileData = await readText ()
-      pageData.push(data)
-      promises.push(makeThumb(srcFile, distThumbFile))
-      promises.push(copyAsJpeg(srcFile, distImgFile))
-    } else {
-      pageData.push(data)
-      promises.push(await makeThumb(srcFile, distThumbFile))
-      promises.push(await copyAsJpeg(srcFile, distImgFile))
-    }
+    pageData.add(data)
   }
-
-  // await writeText("pageData.json", jsonData)
+  await pageData.persistToFile()
   await Promise.all(promises)
   log(`thumbs generated`, 1)
+
   return pageData
 }
-module.exports = { makeThumb, parseImages, processImages }
+module.exports = { makeThumb, parseImages, processImageData }

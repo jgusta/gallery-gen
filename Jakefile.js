@@ -7,9 +7,12 @@ const {
   mkdir,
   getFiles,
   checkOrCreateFile,
-  log
+  getAsyncInvoker,
+  log,
+  PageData,
+  processCss
 } = require("./util.js")
-const { parseImages, processImages } = require("./gallery.js")
+const { parseImages, processImageData } = require("./gallery.js")
 const {
   DISTPATH,
   IMGDESTPATH,
@@ -25,28 +28,26 @@ const pug = require("pug")
 
 desc("clean folders")
 task("clean", async function () {
-  await rm(DISTPATH)
-  log(`cleaned ${DISTPATH}`, 1)
+  try {
+    await rm(DISTPATH)
+    log(`cleaned ${DISTPATH}`, 1)
 
-  mkdir(DISTPATH)
-  log(`created ${DISTPATH}`, 2)
+    await mkdir(DISTPATH)
+    log(`created ${DISTPATH}`, 2)
 
-  mkdir(IMGDESTPATH)
-  log(`created ${IMGDESTPATH}`, 2)
+    await mkdir(IMGDESTPATH)
+    log(`created ${IMGDESTPATH}`, 2)
 
-  mkdir(THUMBPATH)
-  log(`created ${THUMBPATH}`, 2)
+    await mkdir(THUMBPATH)
+    log(`created ${THUMBPATH}`, 2)
+  } catch (err) {
+    log("Could not clean: " + err, 1)
+  }
 })
 
 desc("run tests")
 task("test", async function () {
   exec("jasmine --config=damnl/test/support/jasmine.json")
-})
-
-desc("process images")
-task("convert", async function () {
-  const jsonData = await processImages(IMGSRCPATH, IMGDESTPATH, THUMBPATH)
-  return jsonData
 })
 
 desc("Generate blank metadata files")
@@ -97,10 +98,9 @@ task("rm-meta", async function () {
 desc("Process pug templates")
 task("templates", async function (pageData) {
   log(`processing templates`, 1)
-  log (`pageData :\n ${pageData}`, 3)
   const outputPath = path.normalize(path.join(DISTPATH, "index.html"))
   const html = pug.renderFile(join("src", "templates", "index.pug"), {
-    data: pageData,
+    data: { meta, pageData },
     basedir: TEMPLATEPATH
   })
   await writeText(outputPath, html)
@@ -114,9 +114,41 @@ task("static", async function () {
   await cp(join(STATICPATH, `default.png`), join(DISTPATH, `default.png`))
 })
 
+desc("Convert images")
+task("images", async function (pageData) {
+  for await (const d of pageData) {
+    promises.push(makeThumb(d.srcFile, d.distThumbFile))
+    promises.push(copyAsJpeg(d.srcFile, d.distImgFile))
+  }
+})
+
 desc("Full build")
 task("build", async function () {
-  await Task["clean"].invoke()
-  const jsonData = await Task["convert"].invoke()
-  await Task["templates"].invoke(jsonData)
+  try {
+    const clean = getAsyncInvoker(Task["clean"])
+    const templates = getAsyncInvoker(Task["templates"])
+    const static = getAsyncInvoker(Task["static"])
+    const images = getAsyncInvoker(Task["images"])
+    await clean()
+    await mkdir(join("./", ".cache"))
+    let pageData = new PageData(join("./", ".cache", "pageData.json"))
+    if (!pageData.cached) {
+      pageData = await processImageData(
+        IMGSRCPATH,
+        IMGDESTPATH,
+        THUMBPATH,
+        DISTPATH,
+        pageData
+      )
+    }
+    await images(pageData)
+    await templates(pageData)
+    await processCss(
+      join(TEMPLATEPATH, "css", "style.css"),
+      join(DISTPATH, "style.css")
+    )
+    await static()
+  } catch (err) {
+    log("Could not finish: " + err, 1)
+  }
 })

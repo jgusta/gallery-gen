@@ -1,25 +1,28 @@
 require("dotenv/config")
 const {
+  checkOrCreateFile,
+  copyAsJpeg,
+  processCss,
   writeText,
   readText,
+  mkdir,
+  log,
   rm,
   cp,
-  mkdir,
-  getFiles,
-  checkOrCreateFile,
-  getAsyncInvoker,
-  log,
-  PageData,
-  processCss
 } = require("./util.js")
-const { parseImages, processImageData } = require("./gallery.js")
 const {
-  DISTPATH,
+  getAsyncInvoker,
+  parseImages,
+  makeThumb,
+  PageData
+} = require("./gallery.js")
+const {
+  TEMPLATEPATH,
   IMGDESTPATH,
   IMGSRCPATH,
-  TEMPLATEPATH,
+  STATICPATH,
   THUMBPATH,
-  STATICPATH
+  DISTPATH,
 } = require("./config.js")
 const { task, directory, desc, exec, Task } = require("jake")
 const { join } = require("path")
@@ -53,15 +56,8 @@ task("test", async function () {
 desc("Generate blank metadata files")
 task("gen-meta", async function () {
   const defaultMeta = await readText(join(TEMPLATEPATH, "default.yml"))
-  const imgfiles = await getFiles(IMGSRCPATH)
   let c = 0
-  for await (let i of parseImages(
-    imgfiles,
-    IMGSRCPATH,
-    IMGDESTPATH,
-    THUMBPATH
-  )) {
-    // see if a metatdata file exists for the image with the same basename
+  for await (let i of parseImages()) {
     const result = await checkOrCreateFile(i.metaFile, defaultMeta)
     if (result) {
       log(`${i.metaFile} exists`, 2)
@@ -75,15 +71,8 @@ task("gen-meta", async function () {
 
 desc("remove metadata files")
 task("rm-meta", async function () {
-  const imgfiles = await getFiles(IMGSRCPATH)
   let c = 0
-  for await (let i of parseImages(
-    imgfiles,
-    IMGSRCPATH,
-    IMGDESTPATH,
-    THUMBPATH
-  )) {
-    // see if a metatdata file exists for the image with the same basename
+  for await (let i of parseImages()) {
     const result = await rm(i.metaFile)
     if (result) {
       c++
@@ -116,10 +105,13 @@ task("static", async function () {
 
 desc("Convert images")
 task("images", async function (pageData) {
-  for await (const d of pageData) {
+  log(`creating thumbs and moving images`, 2)
+  let promises = []
+  for await (const d of pageData.getFiles()) {
     promises.push(makeThumb(d.srcFile, d.distThumbFile))
     promises.push(copyAsJpeg(d.srcFile, d.distImgFile))
   }
+  await Promise.all(promises)
 })
 
 desc("Full build")
@@ -132,21 +124,10 @@ task("build", async function () {
     await clean()
     await mkdir(join("./", ".cache"))
     let pageData = new PageData(join("./", ".cache", "pageData.json"))
-    if (!pageData.cached) {
-      pageData = await processImageData(
-        IMGSRCPATH,
-        IMGDESTPATH,
-        THUMBPATH,
-        DISTPATH,
-        pageData
-      )
-    }
+    await pageData.hydrate()
     await images(pageData)
     await templates(pageData)
-    await processCss(
-      join(TEMPLATEPATH, "css", "style.css"),
-      join(DISTPATH, "style.css")
-    )
+    await processCss(join(SRCPATH, "style.css"), join(DISTPATH, "style.css"))
     await static()
   } catch (err) {
     log("Could not finish: " + err, 1)

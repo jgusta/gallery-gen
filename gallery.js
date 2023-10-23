@@ -1,15 +1,15 @@
 const { normalize, parse, join } = require("path")
-const { log, getFiles, readText, copyAsJpeg, PageData } = require("./util.js")
+const { log, getFiles, readText, copyAsJpeg } = require("./util.js")
 const { posix } = require("node:path")
 const sharp = require("sharp")
 const yml = require("yaml")
-function imagesFilter(item) {
-  return item.isFile() && item.name.match(/\.(?:png|jpg|jpeg|gif|webm|tif)$/)
-    ? true
-    : false
-}
-
-
+const {
+  IMGSRCPATH,
+  IMGDESTPATH,
+  THUMBPATH,
+  DISTPATH,
+  SRCPATH
+} = require("./config.js")
 
 async function makeThumb(file, destination, width = 400) {
   log(`thumb ${destination}`, 2)
@@ -31,59 +31,107 @@ async function makeThumb(file, destination, width = 400) {
     .toFile(destination)
 }
 
-async function* parseImages(files, imgSrcDir, imgDestPath, thumbDir) {
-  const filtered = files.filter(imagesFilter)
+async function* parseImages() {
+  const files = await getFiles(IMGSRCPATH)
+  const filtered = files.filter(item =>
+    item.isFile() && item.name.match(/\.(?:png|jpg|jpeg|gif|webm|tif)$/)
+      ? true
+      : false
+  )
   for (const x of filtered) {
-    const srcFile = join(imgSrcDir, x.name)
-    const info = parse(srcFile)
-    yield {
-      srcFile,
-      name: info.name,
-      distImgFile: normalize(join(imgDestPath, `${info.name}.jpg`)),
-      distThumbFile: normalize(join(thumbDir, `${info.name}.thumb.png`)),
-      metaFile: normalize(join(imgSrcDir, `${info.name}.yml`))
-    }
-  }
-}
-
-async function processImageData(
-  IMGSRCPATH,
-  IMGDESTPATH,
-  THUMBPATH,
-  DISTPATH,
-  pageData
-) {
-  log(`processing images`, 1)
-  const imgfiles = await getFiles(IMGSRCPATH)
-  const promises = []
-
-  for await (const i of parseImages(
-    imgfiles,
-    IMGSRCPATH,
-    IMGDESTPATH,
-    THUMBPATH
-  )) {
-    log(`processing ${i.srcFile}`, 2)
-    const { distImgFile, distThumbFile, srcFile, metaFile } = i
-    const thumbUrl = posix.relative(DISTPATH, distThumbFile)
-    const fullUrl = posix.relative(DISTPATH, distImgFile)
-    const data = {
-      srcFile,
-      distImgFile,
-      distThumbFile,
-      thumbUrl,
-      fullUrl
-    }
+    const srcFile = join(IMGSRCPATH, x.name)
+    const { name } = parse(srcFile)
+    const distThumbFile = normalize(join(THUMBPATH, `${name}.thumb.png`))
+    const distImgFile = normalize(join(IMGDESTPATH, `${name}.jpg`))
+    const metaFile = normalize(join(IMGSRCPATH, `${name}.yml`))
     const ymlData = await readText(metaFile)
-    // add attributes from yaml file
     Object.assign(data, yml.parse(ymlData))
     log(`data: ${JSON.stringify(data)}`, 3)
-    pageData.add(data)
+    yield {
+      srcFile,
+      name,
+      distImgFile,
+      distThumbFile,
+      fullUrl: posix.relative(DISTPATH, distImgFile),
+      thumbUrl: posix.relative(DISTPATH, distThumbFile),
+      metaFile: normalize(join(IMGSRCPATH, `${name}.yml`))
+    }
   }
-  await pageData.persistToFile()
-  await Promise.all(promises)
-  log(`thumbs generated`, 1)
-
-  return pageData
 }
-module.exports = { makeThumb, parseImages, processImageData }
+
+function getAsyncInvoker(task) {
+  const name = task.name
+  return (...params) =>
+    new Promise((res, rej) => {
+      task.addListener("complete", () => {
+        log(3, `Task ${task.name} completed.`)
+        res()
+      })
+      task.addListener("error", err => {
+        rej(`Task ${name} failed with the following error: ${err}`)
+      })
+      task.invoke.bind(task)(...params)
+    })
+}
+
+async function processCss(from, to) {
+  const postcss = require("postcss")
+  const rawpostcss = await readText(from)
+  log(`Processing ${from}`, 2)
+  const { map, css } = await postcss().process(rawpostcss, { from, to })
+  log(`Writing ${to}`, 2)
+  await writeText(to, css)
+  if (map) {
+    log(`Writing ${to}.map`, 2)
+    await writeText(`${to}.map`, map.toString())
+  }
+}
+
+class PageData {
+  constructor(fileName) {
+    this.fileName = fileName
+    this.data = []
+    this.cached = false
+  }
+  async hydrate() {
+    if (!this.cached) {
+      this.data = []
+      try {
+        let data = JSON.parse(await readText(this.fileName))
+        if (!Array.isArray(data)) {
+          throw new Error("Invalid cache data")
+        }
+        this.data = data
+        this.cached = true
+        log(`pageData hydrated from cache file ${this.fileName}`, 2)
+        return
+      } catch (err) {
+        log(err, 2)
+      }
+      for await (const i of parseImages()) {
+        this.add(i)
+      }
+      log(`pageData populated. Writing to file.`, 2)
+      await this.persistToFile()
+    }
+  }
+  add(data) {
+    this.data.push(data)
+  }
+  async persistToFile() {
+    return await writeText(this.fileName, JSON.stringify(this.data))
+  }
+  async *getFiles() {
+    for (let i = 0; i < this.data.length; i++) {
+      yield this.data[i]
+    }
+  }
+}
+
+module.exports = {
+  getAsyncInvoker,
+  parseImages,
+  processCss,
+  makeThumb,
+  PageData
+}

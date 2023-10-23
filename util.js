@@ -18,21 +18,6 @@ function promisify(fn, opts = null) {
     )
 }
 
-function getAsyncInvoker(task) {
-  return (...params) =>
-    new Promise((res, rej) => {
-      task.addListener("complete", () => {
-        log(3, `Task ${task.name} completed.`)
-        res()
-      })
-      task.addListener("error", err => {
-        rej(`Task ${name} failed with the following error: ${err}`)
-      })
-      task.invoke.bind(task)(...params)
-
-    })
-}
-
 function log(msg, verbosity = 1) {
   if (process.env.VERBOSE >= verbosity) {
     console.log(msg)
@@ -76,57 +61,13 @@ async function checkOrCreateFile(filePath, text = "") {
   }
 }
 
-class PageData {
-  constructor(fileName) {
-    this.fileName = fileName
-    this.data = []
-    this.cached = false
-    if (checkOrCreateFile(this.fileName, JSON.stringify(this.data))) {
-      this.data = JSON.parse(readText(this.fileName))
-      this.cached = true
-    }
-  }
-  add(data) {
-    this.data.push(data)
-  }
-  async persistToFile() {
-    return await writeText(this.fileName, JSON.stringify(this.data))
-  }
-  async *[Symbol.iterator]() {
-    for (let i = 0; i < this.data.length; i++) {
-      yield this.data[i]
-    }
-  }
-}
-
-async function processCss(from, to) {
-  const autoprefixer = require("autoprefixer")
-  const postcss = require("postcss")
-  const postcssNested = require("postcss-nested")
-  const rawpostcss = await readText(from)
-  log(`Processing ${from}`, 2)
-  const { map, css } = await postcss().process(
-    rawpostcss,
-    { from, to }
-  )
-  log(`Writing ${to}`, 2)
-  await writeText(to, css)
-  if (map) {
-    log(`Writing ${to}.map`, 2)
-    await writeText(`${to}.map`, map.toString())
-  }
-}
-
 module.exports = {
   checkOrCreateFile,
-  getAsyncInvoker,
-  processCss,
   copyAsJpeg,
   promisify,
   writeText,
   readText,
   getFiles,
-  PageData,
   mkdir,
   log,
   cp,
